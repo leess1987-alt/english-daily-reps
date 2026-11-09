@@ -212,6 +212,10 @@ svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke
 .live-on .eq i{animation:eq .8s ease-in-out infinite}
 .eq i:nth-child(2){animation-delay:.1s}.eq i:nth-child(3){animation-delay:.2s}.eq i:nth-child(4){animation-delay:.3s}.eq i:nth-child(5){animation-delay:.4s}
 @keyframes eq{50%{height:22px}}
+.micbtn.busy{background:var(--surface-2);box-shadow:none}
+.spin{width:34px;height:34px;border-radius:50%;border:4px solid var(--line);border-top-color:var(--t-speak);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.eq i{transition:height .08s}
 .mstate{font-weight:700;color:var(--muted);font-size:14px;min-height:22px;text-align:center}
 .heard{font-size:14px;color:var(--muted);text-align:center;min-height:21px}
 .gauge{display:grid;grid-template-columns:auto minmax(0,1fr);gap:16px;align-items:center}
@@ -491,9 +495,9 @@ function makeRecog(){const r=new SR();r.lang="en-US";r.interimResults=true;r.max
   r.onerror=e=>{H.error&&H.error(e)};
   r.onend=()=>{recActive=false;if(pendingStart){const p=pendingStart;pendingStart=null;p();return}H.end&&H.end()};
   return r}
-function stopListening(){recSession++;H.start=H.result=H.error=H.end=null;pendingStart=null;if(recog&&recActive){try{recog.abort()}catch(e){}}}
+function stopListening(){aiSession++;if(curRec)curRec.cancel();recSession++;H.start=H.result=H.error=H.end=null;pendingStart=null;if(recog&&recActive){try{recog.abort()}catch(e){}}}
 /* 빠른 채점: 중간 결과를 실시간 반영, 문장을 다 말하거나 0.9초 조용하면 바로 종료 */
-function listen(target,cb,attempt=0){const {onState,onLive,onDone,onError}=cb;
+function listenSR(target,cb,attempt=0){const {onState,onLive,onDone,onError}=cb;
   if(!SR){onError(MIC_BLOCKED);return}
   stopListening();hush();
   const my=recSession;if(!recog)recog=makeRecog();const r=recog;
@@ -502,7 +506,7 @@ function listen(target,cb,attempt=0){const {onState,onLive,onDone,onError}=cb;
   const clear=()=>{clearTimeout(silence);clearTimeout(hardStop);clearTimeout(startWatch)};
   const finish=()=>{if(done)return;done=true;clear();try{r.stop()}catch(e){}};
   /* 인식기가 먹통이면 새로 만들어 한 번 자동 재시도 */
-  const retry=()=>{clear();stopListening();recog=null;if(attempt<1)setTimeout(()=>listen(target,cb,attempt+1),150);else onError("마이크가 응답하지 않아요. 한 번 더 눌러 보세요.")};
+  const retry=()=>{clear();stopListening();recog=null;if(attempt<1)setTimeout(()=>listenSR(target,cb,attempt+1),150);else onError("마이크가 응답하지 않아요. 한 번 더 눌러 보세요.")};
   H.start=()=>{if(my!==recSession)return;started=true;clearTimeout(startWatch);onState("listening");hardStop=setTimeout(finish,9000)};
   H.result=e=>{if(my!==recSession)return;let finals="",interim="";const altSets=[];
     for(let k=0;k<e.results.length;k++){const res=e.results[k];if(res.isFinal){finals+=" "+res[0].transcript;altSets.push([...res].map(x=>x.transcript))}else interim+=" "+res[0].transcript}
@@ -538,6 +542,69 @@ async function toggleRec(after){
     rec.onstop=()=>{stream.getTracks().forEach(t=>t.stop());if(myUrl)URL.revokeObjectURL(myUrl);myUrl=URL.createObjectURL(new Blob(chunks,{type:rec.mimeType||"audio/mp4"}));after()};
     rec.start();after()}catch(e){toast("마이크 권한을 허용해 주세요")}}
 function playMine(){if(myUrl)new Audio(myUrl).play().catch(()=>{})}
+
+/* ================= AI 발음 인식 (Whisper, 기기 안에서 실행) =================
+   아이폰 홈 화면 앱에서는 Safari 음성 인식이 두 번째부터 소리를 못 받는 버그가 있어서,
+   마이크 소리를 직접 녹음하고 작은 Whisper 모델(약 41MB, 처음 한 번만 받음)로 글자로 바꿔 채점한다. */
+const TF_URL="https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.0/dist/transformers.min.js";
+function useAI(){const m=S.asr||"auto";if(m==="ai")return true;if(m==="fast")return !SR;return !SR||isIOS}
+let asrP=null,asrPct=0,asrReady=false,asrOnPct=null,aiSession=0,curRec=null;const asrFiles={};
+function loadASR(onPct){if(onPct)asrOnPct=onPct;
+  if(!asrP){asrP=(async()=>{const tf=await import(TF_URL);tf.env.allowLocalModels=false;
+      const p=await tf.pipeline("automatic-speech-recognition","Xenova/whisper-tiny.en",{dtype:"q8",device:"wasm",
+        progress_callback:x=>{if(x.file&&x.total){asrFiles[x.file]=[x.loaded||0,x.total];let a=0,b=0;for(const k in asrFiles){a+=asrFiles[k][0];b+=asrFiles[k][1]}
+          asrPct=b?Math.round(a/b*100):0;if(asrOnPct)asrOnPct(asrPct)}}});
+      asrReady=true;return p})();
+    asrP.catch(()=>{asrP=null})}
+  return asrP}
+const concatF32=bs=>{let n=0;bs.forEach(b=>n+=b.length);const o=new Float32Array(n);let k=0;bs.forEach(b=>{o.set(b,k);k+=b.length});return o};
+function resample(pcm,from,to=16000){if(from===to)return pcm;const r=from/to,n=Math.floor(pcm.length/r),o=new Float32Array(n);
+  for(let i=0;i<n;i++){const x=i*r,i0=Math.floor(x),f=x-i0;o[i]=pcm[i0]*(1-f)+(pcm[i0+1]||0)*f}return o}
+function wavBlob(pcm,rate){const b=new ArrayBuffer(44+pcm.length*2),v=new DataView(b),w=(o,s)=>{for(let i=0;i<s.length;i++)v.setUint8(o+i,s.charCodeAt(i))};
+  w(0,"RIFF");v.setUint32(4,36+pcm.length*2,true);w(8,"WAVE");w(12,"fmt ");v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,"data");v.setUint32(40,pcm.length*2,true);
+  for(let i=0;i<pcm.length;i++){const s=Math.max(-1,Math.min(1,pcm[i]));v.setInt16(44+i*2,s<0?s*0x8000:s*0x7fff,true)}return new Blob([b],{type:"audio/wav"})}
+/* 녹음: 말이 시작되면 감지하고, 0.85초 조용하면 자동 종료 */
+async function recordUtterance(onStart,onLevel){
+  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+  const AC=window.AudioContext||window.webkitAudioContext;const ctx=new AC();try{await ctx.resume()}catch(e){}
+  const src=ctx.createMediaStreamSource(stream),proc=ctx.createScriptProcessor(2048,1,1),sink=ctx.createGain();sink.gain.value=0;
+  const bufs=[];const t0=performance.now();let speaking=false,last=0,noise=0,nN=0,startBuf=0;
+  return await new Promise(resolve=>{let ended=false;
+    const end=why=>{if(ended)return;ended=true;proc.onaudioprocess=null;try{src.disconnect();proc.disconnect();sink.disconnect()}catch(e){}
+      stream.getTracks().forEach(t=>t.stop());const rate=ctx.sampleRate;ctx.close().catch(()=>{});if(curRec&&curRec.end===end)curRec=null;
+      resolve({why,spoke:speaking,rate,pcm:concatF32(bufs.slice(startBuf))})};
+    curRec={end,finish:()=>end("tap"),cancel:()=>end("cancel")};
+    proc.onaudioprocess=e=>{const d=new Float32Array(e.inputBuffer.getChannelData(0));bufs.push(d);
+      let s=0;for(let i=0;i<d.length;i++)s+=d[i]*d[i];const rms=Math.sqrt(s/d.length),now=performance.now()-t0;
+      if(now<250){noise+=rms;nN++;return}
+      const thr=Math.max(0.012,Math.min(0.05,(noise/Math.max(1,nN))*3));
+      if(rms>thr){if(!speaking){speaking=true;startBuf=Math.max(0,bufs.length-8)}last=now}
+      onLevel(rms/thr);
+      if(speaking&&now-last>850)end("silence");else if(!speaking&&now>7000)end("nospeech");else if(now>12000)end("max")};
+    src.connect(proc);proc.connect(sink);sink.connect(ctx.destination);onStart()})}
+async function listenAI(target,{onState,onLevel,onDone,onError}){
+  stopListening();hush();const my=++aiSession;
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){onError(MIC_BLOCKED);return}
+  if(!asrReady)loadASR().catch(()=>{});/* 녹음하는 동안 모델을 미리 받기 */
+  try{onState("starting");
+    const rec=await recordUtterance(()=>{if(my===aiSession)onState("listening")},l=>{if(my===aiSession)onLevel(l)});
+    if(my!==aiSession||rec.why==="cancel")return;
+    if(!rec.spoke){onError("소리가 들리지 않았어요. 마이크를 누르고 말해 보세요.");return}
+    if(myUrl)URL.revokeObjectURL(myUrl);myUrl=URL.createObjectURL(wavBlob(rec.pcm,rec.rate));
+    onState(asrReady?"scoring":"loading");
+    const asr=await loadASR(p=>{if(my===aiSession&&!asrReady)onState("loading",p)});
+    if(my!==aiSession)return;onState("scoring");
+    const out=await asr(resample(rec.pcm,rec.rate));
+    if(my!==aiSession)return;
+    const heard=String(out&&out.text||"").replace(/\[[^\]]*\]|\([^)]*\)/g,"").trim();
+    if(!tok(heard).length){onError("잘 안 들렸어요. 조금 더 크게 말해 보세요.");return}
+    onDone({...align(target,heard),heard})
+  }catch(e){if(my!==aiSession)return;
+    onError(e&&e.name==="NotAllowedError"?"마이크 권한이 막혀 있어요. 아이폰 설정 → Safari → 마이크에서 허용해 주세요."
+      :/import|fetch|network|load/i.test(String(e&&e.message||e))?"AI 채점을 불러오지 못했어요. 인터넷 연결을 확인해 주세요."
+      :"녹음 중 문제가 생겼어요: "+(e&&e.message||e))}}
+function listen(target,cb){if(useAI())return listenAI(target,cb);return listenSR(target,cb)}
 
 /* ================= SESSION ENGINE ================= */
 let cur=null;
@@ -633,29 +700,44 @@ EX.speak={
     </div>
     ${st.final?`<div class="card gauge"><div class="ring">${ringSVG(r.pct/100,gradeOf(r.pct)[1],"var(--surface-2)",92,10)}<span class="v">${r.pct}</span></div>
       <div><h3 style="color:${gradeOf(r.pct)[1]}">${gradeOf(r.pct)[0]}</h3><p class="muted" style="font-size:14px">${gradeOf(r.pct)[2]}</p></div></div>`:""}
-    <div class="micwrap ${st.live?"live-on":""}">
-      <div class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
-      <button class="micbtn ${st.live?"live":""}" id="micB" aria-label="${st.live?"채점 멈추기":"말하기 시작"}">${ico(KINDS.speak.icon)}</button>
+    <div class="micwrap ${st.live&&!useAI()?"live-on":""}">
+      <div class="eq" id="eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+      <button class="micbtn ${st.live?"live":""} ${st.busy?"busy":""}" id="micB" ${st.busy?"disabled":""} aria-label="${st.live?(useAI()?"말 끝내고 채점하기":"채점 멈추기"):"말하기 시작"}">${st.busy?'<span class="spin"></span>':ico(KINDS.speak.icon)}</button>
       <div class="mstate" id="mstate">${st.msg||(st.final?"다시 하려면 마이크를 누르세요":"마이크를 누르고 문장을 말하세요")}</div>
       <div class="heard" id="heard">${st.res&&st.res.heard?"인식: “"+esc(st.res.heard)+"”":""}</div>
     </div>
-    <div class="subbar"><button class="btn sm ghost" id="recB">${ico(I.rec)}${recording()?"녹음 멈추기":myUrl?"다시 녹음":"녹음하기"}</button>
+    <div class="subbar">${useAI()?`<button class="btn sm ghost" id="mineB" ${myUrl?"":"disabled"}>${ico(I.play)}내 목소리</button>`
+      :`<button class="btn sm ghost" id="recB">${ico(I.rec)}${recording()?"녹음 멈추기":myUrl?"다시 녹음":"녹음하기"}</button>`}
       <button class="btn sm ghost" id="abB" ${myUrl?"":"disabled"}>${ico(I.ear)}원어민 → 나</button></div>`},
   bind(it,st){const en=SENTS[it.i][0];
     $("#sp").onclick=()=>speak(en);$("#sps").onclick=()=>speak(en,.7);
     if(!st.spoke){st.spoke=1;speak(en)}
-    $("#recB").onclick=()=>toggleRec(()=>render());$("#abB").onclick=()=>speak(en,1,()=>setTimeout(playMine,300));
+    if($("#recB"))$("#recB").onclick=()=>toggleRec(()=>render());if($("#mineB"))$("#mineB").onclick=playMine;
+    $("#abB").onclick=()=>speak(en,1,()=>setTimeout(playMine,300));
+    const ai=useAI();
+    /* AI 모드: 이 화면에 들어오면 모델을 미리 받기 시작 */
+    if(ai&&!asrReady&&!st.live&&!st.busy){loadASR(p=>{const m=$("#mstate");if(m&&!st.live&&!st.busy&&!st.msg)m.textContent=`AI 채점 준비 중 ${p}% (처음 한 번만 받아요)`})
+      .then(()=>{const m=$("#mstate");if(m&&!st.live&&!st.busy&&!st.msg)m.textContent=st.final?"다시 하려면 마이크를 누르세요":"마이크를 누르고 문장을 말하세요"}).catch(()=>{})}
+    const meter=l=>{const bars=document.querySelectorAll("#eq i");const v=Math.min(1,l/2.5);
+      bars.forEach((b,k)=>{b.style.height=(6+v*16*(0.6+0.4*Math.abs(Math.sin(Date.now()/120+k))))+"px"})};
     const liveRender=r=>{st.res=r;const box=$("#liveWords");if(!box)return;box.className="words";
       box.innerHTML=r.words.map((w,k)=>`<span class="${r.marks[k]==="miss"?"wait":r.marks[k]}">${esc(w)}</span>`).join("");
       const h=$("#heard");if(h)h.textContent=r.heard?"인식: “"+r.heard+"”":""};
     $("#micB").onclick=()=>{
-      if(st.live){stopListening();st.live=0;st.msg="";render();return}
-      st.final=0;st.msg="";
+      if(st.busy)return;
+      if(st.live){if(ai&&curRec){curRec.finish();return}stopListening();st.live=0;st.msg="";render();return}
+      st.final=0;st.msg="";st.res=null;
       listen(en,{
-        onState:s=>{st.live=1;st.msg=s==="starting"?"마이크 준비 중…":"듣고 있어요. 지금 말하세요!";if(s==="starting")render();else{const m=$("#mstate");if(m)m.textContent=st.msg}},
+        onState:(s,p)=>{
+          if(s==="starting"){st.live=1;st.busy=0;st.msg="마이크 준비 중…";render();return}
+          if(s==="listening"){st.live=1;st.busy=0;st.msg=ai?"듣고 있어요. 말이 끝나면 자동으로 채점해요":"듣고 있어요. 지금 말하세요!";
+            const m=$("#mstate");if(m)m.textContent=st.msg;const b=$("#micB");if(b)b.classList.add("live");return}
+          const msg=s==="loading"?`AI 채점 준비 중 ${p!=null?p:asrPct}% (처음 한 번만 받아요)`:"채점 중…";
+          if(!st.busy||st.live){st.live=0;st.busy=1;st.msg=msg;render()}else{st.msg=msg;const m=$("#mstate");if(m)m.textContent=msg}},
+        onLevel:meter,
         onLive:r=>liveRender(r),
-        onDone:r=>{st.live=0;st.final=1;st.res=r;st.msg="";if(!st.counted){st.counted=1;award("speak",r.pct>=70)}render()},
-        onError:m=>{st.live=0;st.msg=m;render()}})};
+        onDone:r=>{st.live=0;st.busy=0;st.final=1;st.res=r;st.msg="";if(!st.counted){st.counted=1;award("speak",r.pct>=70)}render()},
+        onError:m=>{st.live=0;st.busy=0;st.msg=m;render()}})};
     setCTA(st.final?`<button class="btn ghost" id="again">${ico(I.redo)}다시</button><button class="btn primary" id="go">계속하기</button>`
       :`<button class="btn ghost" id="skip">건너뛰기</button>`);
     if($("#again"))$("#again").onclick=()=>$("#micB").click();
@@ -710,6 +792,13 @@ views.settings=()=>{const v=pickVoice();
     <label for="rateSel">말하기 속도 <span id="rateVal" class="muted">${rateLabel()}</span><input type="range" id="rateSel" min="0.5" max="1.1" step="0.05" value="${S.rate}"></label>
     <button class="btn ghost" id="testV">${ico(I.play)}"Nice to meet you." 들어보기</button>
   </section>
+  <section class="card set">
+    <label for="asrSel">발음 채점 방식<select id="asrSel">
+      <option value="auto" ${(S.asr||"auto")==="auto"?"selected":""}>자동 (아이폰은 AI, PC는 빠른 인식)</option>
+      <option value="ai" ${S.asr==="ai"?"selected":""}>AI 인식: 안정적, 처음 한 번 약 41MB 받기</option>
+      <option value="fast" ${S.asr==="fast"?"selected":""}>빠른 인식: 말하는 동안 실시간 표시</option></select></label>
+    <p class="muted" style="font-size:13px">지금 쓰는 방식: <b>${useAI()?"AI 인식":"빠른 인식"}</b>${useAI()?(asrReady?" · 준비 완료":" · 처음 말하기 할 때 내려받아요"):""}. 아이폰 홈 화면 앱에서 빠른 인식은 두 번째 문장부터 멈출 수 있어요.</p>
+  </section>
   <section class="card"><span class="label">아이폰에 앱처럼 설치하기</span><ol class="how"><li>Safari로 앱 주소 열기</li><li>공유 버튼 → <b>홈 화면에 추가</b></li><li>처음 말하기 할 때 마이크·음성 인식 <b>허용</b></li></ol></section>
   <section class="card set"><span class="label">학습 기록</span>
     ${S._confirmReset?`<p>단어 암기 진도, 연속 기록, 경험치가 모두 지워져요. 되돌릴 수 없어요.</p><div style="display:flex;gap:10px"><button class="btn ghost" id="rsNo" style="flex:1">취소</button><button class="btn" id="rsYes" style="flex:1;background:var(--bad);color:var(--surface)">모두 지우기</button></div>`
@@ -721,6 +810,7 @@ function bindHome(){const s=$("#startL");if(s)s.onclick=()=>startSession("lesson
 function bindSettings(){const sel=$("#voiceSel");sel.onchange=()=>{S.voice=sel.value;save()};
   const r=$("#rateSel");r.oninput=()=>{S.rate=+r.value;$("#rateVal").textContent=rateLabel();save()};
   const t=$("#recT");if(t)t.onchange=()=>{S.rec=t.checked;save();render()};
+  const a=$("#asrSel");a.onchange=()=>{S.asr=a.value;save();render()};
   $("#testV").onclick=()=>speak("Nice to meet you.");
   if($("#rsAsk"))$("#rsAsk").onclick=()=>{S._confirmReset=1;render()};
   if($("#rsNo"))$("#rsNo").onclick=()=>{delete S._confirmReset;render()};
