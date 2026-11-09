@@ -547,20 +547,24 @@ async function toggleRec(after){
     rec.start();after()}catch(e){toast("마이크 권한을 허용해 주세요")}}
 function playMine(){if(myUrl)new Audio(myUrl).play().catch(()=>{})}
 
-/* ================= AI 발음 인식 (Whisper, 기기 안에서 실행) =================
+/* ================= AI 발음 인식 (Moonshine, 기기 안에서 실행) =================
    아이폰 홈 화면 앱에서는 Safari 음성 인식이 두 번째부터 소리를 못 받는 버그가 있어서,
-   마이크 소리를 직접 녹음하고 작은 Whisper 모델(약 41MB, 처음 한 번만 받음)로 글자로 바꿔 채점한다. */
+   마이크 소리를 직접 녹음하고 실시간 자막용 Moonshine 모델(약 28MB, 처음 한 번만 받음)로 글자로 바꿔 채점한다.
+   Moonshine은 말한 길이만큼만 계산해서 짧은 문장은 0.1초 안팎으로 끝나, 말하는 도중에도 단어 초록불을 켤 수 있다. */
 const TF_URL="https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.0/dist/transformers.min.js";
 function useAI(){const m=S.asr||"auto";if(m==="ai")return true;if(m==="fast")return !SR;return !SR||isIOS}
 let asrP=null,asrPct=0,asrReady=false,asrOnPct=null,aiSession=0,curRec=null;const asrFiles={};
 function loadASR(onPct){if(onPct)asrOnPct=onPct;
   if(!asrP){asrP=(async()=>{const tf=await import(TF_URL);tf.env.allowLocalModels=false;
-      const p=await tf.pipeline("automatic-speech-recognition","Xenova/whisper-tiny.en",{dtype:"q8",device:"wasm",
+      const p=await tf.pipeline("automatic-speech-recognition","onnx-community/moonshine-tiny-ONNX",{dtype:"q8",device:"wasm",
         progress_callback:x=>{if(x.file&&x.total){asrFiles[x.file]=[x.loaded||0,x.total];let a=0,b=0;for(const k in asrFiles){a+=asrFiles[k][0];b+=asrFiles[k][1]}
           asrPct=b?Math.round(a/b*100):0;if(asrOnPct)asrOnPct(asrPct)}}});
       asrReady=true;return p})();
     asrP.catch(()=>{asrP=null})}
   return asrP}
+/* 글자로 바꾸기: 끝에 0.3초 여백을 붙이고, 출력 길이를 말한 길이에 맞춰 넉넉히 허용 (안 그러면 문장 끝이 잘림) */
+async function transcribe(asr,pcm16k){const o=new Float32Array(pcm16k.length+4800);o.set(pcm16k);
+  const out=await asr(o,{max_new_tokens:Math.ceil(pcm16k.length/16000*10)+6});return cleanHeard(out&&out.text)}
 const concatF32=bs=>{let n=0;bs.forEach(b=>n+=b.length);const o=new Float32Array(n);let k=0;bs.forEach(b=>{o.set(b,k);k+=b.length});return o};
 function resample(pcm,from,to=16000){if(from===to)return pcm;const r=from/to,n=Math.floor(pcm.length/r),o=new Float32Array(n);
   for(let i=0;i<n;i++){const x=i*r,i0=Math.floor(x),f=x-i0;o[i]=pcm[i0]*(1-f)+(pcm[i0+1]||0)*f}return o}
@@ -616,7 +620,7 @@ async function listenAI(target,{onState,onLevel,onLive,onDone,onError}){
       if(!recording||!asrReady||!curRec||!curRec.peek)continue;const pk=curRec.peek();
       if(!pk.spoke||pk.pcm.length<pk.rate*0.4)continue;
       inflightLen=pk.pcm.length;
-      inflight=(async()=>{const asr=await asrP;const out=await asr(resample(pk.pcm,pk.rate));return cleanHeard(out&&out.text)})();
+      inflight=(async()=>{const asr=await asrP;return await transcribe(asr,resample(pk.pcm,pk.rate))})();
       let heard="";try{heard=await inflight}catch(e){}
       const len=inflightLen;inflight=null;
       if(my!==aiSession||!tok(heard).length)continue;
@@ -642,9 +646,9 @@ async function listenAI(target,{onState,onLevel,onLive,onDone,onError}){
     const asr=await loadASR(p=>{if(waitingModel&&my===aiSession&&!asrReady)onState("loading",p)});
     waitingModel=false;asrOnPct=null;
     if(my!==aiSession)return;onState("scoring");
-    const out=await asr(resample(rec.pcm,rec.rate));
+    const heardText=await transcribe(asr,resample(rec.pcm,rec.rate));
     if(my!==aiSession)return;
-    const heard=cleanHeard(out&&out.text);
+    const heard=heardText;
     if(!tok(heard).length&&!live){onError("잘 안 들렸어요. 조금 더 크게 말해 보세요.");return}
     const fin=tok(heard).length?{...align(target,heard),heard}:null;
     onDone(fin?mergeMarks(fin,live):live)
@@ -855,7 +859,7 @@ views.settings=()=>{const v=pickVoice();
   <section class="card set">
     <label for="asrSel">발음 채점 방식<select id="asrSel">
       <option value="auto" ${(S.asr||"auto")==="auto"?"selected":""}>자동 (아이폰은 AI, PC는 빠른 인식)</option>
-      <option value="ai" ${S.asr==="ai"?"selected":""}>AI 인식: 안정적, 처음 한 번 약 41MB 받기</option>
+      <option value="ai" ${S.asr==="ai"?"selected":""}>AI 인식: 안정적, 처음 한 번 약 28MB 받기</option>
       <option value="fast" ${S.asr==="fast"?"selected":""}>빠른 인식: 말하는 동안 실시간 표시</option></select></label>
     <p class="muted" style="font-size:13px">지금 쓰는 방식: <b>${useAI()?"AI 인식":"빠른 인식"}</b>${useAI()?(asrReady?" · 준비 완료":" · 처음 말하기 할 때 내려받아요"):""}. 아이폰 홈 화면 앱에서 빠른 인식은 두 번째 문장부터 멈출 수 있어요.</p>
   </section>
