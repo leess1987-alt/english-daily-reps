@@ -20,7 +20,7 @@ cd "$(dirname "$0")"
 <meta name="theme-color" content="#2F4BD6">
 <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}img{max-width:100%}[hidden]{display:none!important}</style>
 HEAD
-  sed 's#^<div class="wrap">#</head>\n<body>\n<div class="wrap">#' app.src.html
+  sed 's#^<div id="app">#</head>\n<body>\n<div id="app">#' app.src.html
   cat <<'FOOT'
 <script>if('serviceWorker' in navigator && location.protocol==='https:'){navigator.serviceWorker.register('sw.js').catch(()=>{})}</script>
 </body>

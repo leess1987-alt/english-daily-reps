@@ -41,7 +41,7 @@ $bw.Write($pngBytes); $bw.Flush()
 
 # --- shortcuts ---
 $url = 'file:///' + ((Join-Path $root 'index.html') -replace '\\', '/')
-$launchArgs = "--app=`"$url`" --window-size=1120,820"
+$launchArgs = "--app=`"$url`" --window-size=480,900"
 $shell = New-Object -ComObject WScript.Shell
 foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
   $lnk = $shell.CreateShortcut((Join-Path $dir "$name.lnk"))

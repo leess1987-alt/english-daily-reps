@@ -1,5 +1,5 @@
 // Offline cache for the hosted (HTTPS) version. Bump VERSION when files change.
-const VERSION = 'edr-v4';
+const VERSION = 'edr-v5';
 const FILES = ['./', './index.html', './manifest.json', './icon-180.png', './icon-512.png', './icon.png'];
 
 self.addEventListener('install', e => {
