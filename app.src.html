@@ -252,6 +252,13 @@ svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke
 .set label{display:grid;gap:6px;font-weight:700;font-size:14px}
 select{font:inherit;height:48px;border-radius:12px;border:2px solid var(--line);background:var(--surface);color:var(--ink);padding:0 12px}
 input[type=range]{width:100%;accent-color:var(--accent)}
+.switch{display:grid!important;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.switch span{display:grid;gap:2px}
+.switch small{font-weight:400;color:var(--muted);font-size:13px;line-height:1.45}
+.switch input{appearance:none;-webkit-appearance:none;width:52px;height:30px;border-radius:999px;background:var(--line);position:relative;cursor:pointer;transition:background .2s;margin:0}
+.switch input::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:var(--surface);box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+.switch input:checked{background:var(--good)}
+.switch input:checked::after{transform:translateX(22px)}
 .warnbox{background:var(--bad-bg);border-radius:16px;padding:14px 16px;font-size:14px;display:grid;gap:4px}
 .warnbox b{color:var(--bad)}
 ol.how{margin:6px 0 0;padding-left:20px;display:grid;gap:4px;font-size:14px;color:var(--muted)}
@@ -412,10 +419,22 @@ const synth=window.speechSynthesis;let voices=[];
 function loadVoices(){if(!synth)return;voices=synth.getVoices().filter(v=>/^en[-_]/i.test(v.lang))}
 if(synth){loadVoices();synth.onvoiceschanged=()=>{loadVoices();if(route()==="settings")render()};[400,1500,4000].forEach(t=>setTimeout(()=>{if(!voices.length)loadVoices()},t))}
 function pickVoice(){return voices.find(v=>v.name===S.voice)||voices.find(v=>/en-US/i.test(v.lang)&&/natural|neural|google|samantha|siri/i.test(v.name))||voices.find(v=>/en-US/i.test(v.lang))||voices[0]}
-function speak(text,rateMul=1,onend){if(!synth){toast("이 기기는 음성 재생을 지원하지 않아요");return}
+function ttsSpeak(text,rateMul=1,onend){if(!synth){toast("이 기기는 음성 재생을 지원하지 않아요");return}
   if(!voices.length)loadVoices();const v=pickVoice();
   if(!v){toast("영어 음성이 없어요. 설정 탭을 확인해 주세요");return}
   synth.cancel();const u=new SpeechSynthesisUtterance(text);u.voice=v;u.lang=v.lang;u.rate=S.rate*rateMul;if(onend)u.onend=onend;synth.speak(u)}
+/* 원어민 스타일 녹음 파일(audio/*.mp3)을 먼저 재생하고, 없으면 기기 음성(TTS)으로 대신 읽기 */
+const slug=t=>t.toLowerCase().replace(/[’']/g,"").replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
+const audioOK=!/claude\.ai|claudeusercontent|claude\.site/.test(location.hostname);
+let player=null;
+function hush(){if(synth)synth.cancel();if(player){player.onended=null;player.onerror=null;player.pause();player=null}}
+function speak(text,rateMul=1,onend){hush();
+  if(!audioOK||S.rec===false){ttsSpeak(text,rateMul,onend);return}
+  const a=new Audio("audio/"+slug(text)+".mp3");player=a;
+  const r=Math.min(2,Math.max(.5,S.rate/0.85*rateMul));a.defaultPlaybackRate=r;a.playbackRate=r;a.preservesPitch=true;
+  let fell=false;const fall=()=>{if(fell||player!==a)return;fell=true;player=null;ttsSpeak(text,rateMul,onend)};
+  a.onerror=fall;a.onended=()=>{if(player===a)player=null;if(onend)onend()};
+  a.play().catch(e=>{if(!(e&&e.name==="NotAllowedError"))fall()})}
 
 /* ================= HELPERS ================= */
 const $=s=>document.querySelector(s);
@@ -466,7 +485,7 @@ function stopListening(){if(recog){try{recog.abort()}catch(e){}recog=null}}
 /* 빠른 채점: 중간 결과를 실시간 반영, 문장을 다 말하거나 0.9초 조용하면 바로 종료 */
 function listen(target,{onState,onLive,onDone,onError}){
   if(!SR){onError(MIC_BLOCKED);return}
-  stopListening();if(synth)synth.cancel();
+  stopListening();hush();
   const r=new SR();recog=r;r.lang="en-US";r.interimResults=true;r.continuous=true;r.maxAlternatives=3;
   let best={pct:0,words:normWords(target),marks:normWords(target).map(()=>"miss"),heard:""},silence=null,hardStop=null,done=false,errored=false;
   const finish=()=>{if(done)return;done=true;clearTimeout(silence);clearTimeout(hardStop);try{r.stop()}catch(e){}};
@@ -493,7 +512,7 @@ function clearRec(){if(recording())rec.stop();if(myUrl)URL.revokeObjectURL(myUrl
 async function toggleRec(after){
   if(recording()){rec.stop();return}
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia||!window.MediaRecorder){toast("이 화면에서는 녹음을 쓸 수 없어요");return}
-  try{stopListening();const stream=await navigator.mediaDevices.getUserMedia({audio:true});if(synth)synth.cancel();chunks=[];rec=new MediaRecorder(stream);
+  try{stopListening();const stream=await navigator.mediaDevices.getUserMedia({audio:true});hush();chunks=[];rec=new MediaRecorder(stream);
     rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
     rec.onstop=()=>{stream.getTracks().forEach(t=>t.stop());if(myUrl)URL.revokeObjectURL(myUrl);myUrl=URL.createObjectURL(new Blob(chunks,{type:rec.mimeType||"audio/mp4"}));after()};
     rec.start();after()}catch(e){toast("마이크 권한을 허용해 주세요")}}
@@ -514,9 +533,9 @@ function startSession(mode,type){
   /* 말하기 탭(#speak)에서 들어오면 기록을 바꿔치기해서, 뒤로 가기가 세션을 다시 시작하지 않게 */
   if(location.hash==="#speak"){history.replaceState(null,"","#session");render()}
   else if(location.hash!=="#session")location.hash="session";else render()}
-function endSession(){stopListening();clearRec();if(synth)synth.cancel();cur=null;hideSheet()}
+function endSession(){stopListening();clearRec();hush();cur=null;hideSheet()}
 function award(kind,ok){const g=ok?10:3;cur.xp+=g;S.xp=(S.xp||0)+g;if(ok)cur.correct++;dayLog()[KINDS[kind].log]++;save()}
-function next(){hideSheet();stopListening();clearRec();if(synth)synth.cancel();cur.i++;cur.st={};
+function next(){hideSheet();stopListening();clearRec();hush();cur.i++;cur.st={};
   if(cur.i>=cur.items.length){if(cur.mode==="lesson"){cur.xp+=30;S.xp+=30;dayLog().lesson=true;save()}cur.finished=true}
   render();window.scrollTo(0,0)}
 
@@ -659,13 +678,15 @@ views.stats=()=>{const days=[];for(let k=6;k>=0;k--){const d=new Date();d.setDat
   <section class="card lvl"><div style="display:flex;justify-content:space-between"><span class="label">다음 레벨까지</span><b style="font-variant-numeric:tabular-nums">${into} / 200 XP</b></div><div class="track"><i style="width:${into/2}%"></i></div></section>
   <section class="card"><span class="label">최근 7일 푼 문제 수</span><div class="bars">${days.map(([d,v])=>`<div><em>${v||""}</em><i class="${v?"":"zero"}" style="height:${Math.max(4,v/mx*100)}%"></i><span>${"일월화수목금토"[d.getDay()]}</span></div>`).join("")}</div></section>
   <section class="card"><span class="label">단어 암기 현황 (${WORDS.length}개)</span><div class="mastery">${boxes.map((n,i)=>`<div class="mrow"><span>${names[i]}</span><span class="track"><i style="width:${n/WORDS.length*100}%;background:${i===5?"var(--good)":i===0?"var(--line)":"var(--accent)"};opacity:${i===0||i===5?1:.45+i*.12}"></i></span><b>${n}</b></div>`).join("")}</div></section></div>`};
+function rateLabel(){const x=S.rate/0.85;return x.toFixed(2)+"× "+(x<0.8?"(느리게)":x>1.1?"(빠르게)":"(보통)")}
 views.settings=()=>{const v=pickVoice();
   return `<div class="homeview" style="display:grid;gap:16px">
   <header class="top"><h1><small>나에게 맞게</small>설정</h1></header>
-  ${voices.length?"":`<div class="warnbox"><b>영어 음성이 없어요</b>영어를 한국어 음성으로 엉터리로 읽지 않도록 재생을 막아 두었어요. Windows는 <b>설정 → 시간 및 언어 → 음성 → 음성 추가</b>에서 English (United States)를 설치하세요. 아이폰은 <b>설정 → 손쉬운 사용 → 읽기 및 말하기 → 음성 → 영어</b>에서 받을 수 있어요.</div>`}
+  ${voices.length||(audioOK&&S.rec!==false)?"":`<div class="warnbox"><b>영어 음성이 없어요</b>영어를 한국어 음성으로 엉터리로 읽지 않도록 재생을 막아 두었어요. Windows는 <b>설정 → 시간 및 언어 → 음성 → 음성 추가</b>에서 English (United States)를 설치하세요. 아이폰은 <b>설정 → 손쉬운 사용 → 읽기 및 말하기 → 음성 → 영어</b>에서 받을 수 있어요.</div>`}
   <section class="card set">
-    <label for="voiceSel">발음 음성<select id="voiceSel">${voices.length?voices.map(o=>`<option value="${esc(o.name)}" ${v&&o.name===v.name?"selected":""}>${esc(o.name.replace(/Microsoft |Google /,""))} (${o.lang})</option>`).join(""):"<option>영어 음성 없음</option>"}</select></label>
-    <label for="rateSel">말하기 속도 <span id="rateVal" class="muted">${S.rate.toFixed(2)}×</span><input type="range" id="rateSel" min="0.5" max="1.1" step="0.05" value="${S.rate}"></label>
+    ${audioOK?`<label class="switch" for="recT"><span><b>원어민 스타일 음성</b><small>사람처럼 자연스러운 AI 음성으로 미리 만든 소리예요. 끄면 기기에 깔린 음성으로 읽어요.</small></span><input type="checkbox" id="recT" ${S.rec!==false?"checked":""}></label>`:""}
+    <label for="voiceSel">${audioOK?"기기 음성 (녹음이 없는 단어용)":"발음 음성"}<select id="voiceSel">${voices.length?voices.map(o=>`<option value="${esc(o.name)}" ${v&&o.name===v.name?"selected":""}>${esc(o.name.replace(/Microsoft |Google /,""))} (${o.lang})</option>`).join(""):"<option>영어 음성 없음</option>"}</select></label>
+    <label for="rateSel">말하기 속도 <span id="rateVal" class="muted">${rateLabel()}</span><input type="range" id="rateSel" min="0.5" max="1.1" step="0.05" value="${S.rate}"></label>
     <button class="btn ghost" id="testV">${ico(I.play)}"Nice to meet you." 들어보기</button>
   </section>
   <section class="card"><span class="label">아이폰에 앱처럼 설치하기</span><ol class="how"><li>Safari로 앱 주소 열기</li><li>공유 버튼 → <b>홈 화면에 추가</b></li><li>처음 말하기 할 때 마이크·음성 인식 <b>허용</b></li></ol></section>
@@ -677,7 +698,8 @@ function bindHome(){const s=$("#startL");if(s)s.onclick=()=>startSession("lesson
   document.querySelectorAll("[data-mode]").forEach(b=>b.onclick=()=>startSession("practice",b.dataset.mode));
   document.querySelectorAll("[data-topic]").forEach(b=>b.onclick=()=>{S.topic=b.dataset.topic;save();render()})}
 function bindSettings(){const sel=$("#voiceSel");sel.onchange=()=>{S.voice=sel.value;save()};
-  const r=$("#rateSel");r.oninput=()=>{S.rate=+r.value;$("#rateVal").textContent=S.rate.toFixed(2)+"×";save()};
+  const r=$("#rateSel");r.oninput=()=>{S.rate=+r.value;$("#rateVal").textContent=rateLabel();save()};
+  const t=$("#recT");if(t)t.onchange=()=>{S.rec=t.checked;save();render()};
   $("#testV").onclick=()=>speak("Nice to meet you.");
   if($("#rsAsk"))$("#rsAsk").onclick=()=>{S._confirmReset=1;render()};
   if($("#rsNo"))$("#rsNo").onclick=()=>{delete S._confirmReset;render()};

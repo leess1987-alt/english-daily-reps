@@ -5,6 +5,11 @@
 - **아이폰:** GitHub Pages 주소를 Safari로 열고 공유 → 홈 화면에 추가
 - **Windows PC:** `install.bat` 실행 → 바탕화면 / 시작 메뉴에 바로가기 생성
 
+## 음성 파일
+`audio/*.mp3`는 [Kokoro](https://github.com/hexgrad/kokoro) (Apache-2.0) AI 음성으로 만든 파일입니다.
+문장을 추가하면 `tools/gen_audio.py`로 새 문장 음성만 추가 생성할 수 있어요 (kokoro-onnx 필요).
+녹음 파일이 없는 문장은 기기 음성으로 자동 대체됩니다.
+
 ## 수정하는 법
 `app.src.html`을 고친 뒤 `bash build.sh`로 `index.html`을 다시 만들고 커밋·푸시하세요.
 캐시 갱신을 위해 `sw.js`의 `VERSION`도 올려 주세요.

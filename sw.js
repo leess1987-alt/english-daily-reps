@@ -1,5 +1,5 @@
 // Offline cache for the hosted (HTTPS) version. Bump VERSION when files change.
-const VERSION = 'edr-v5';
+const VERSION = 'edr-v6';
 const FILES = ['./', './index.html', './manifest.json', './icon-180.png', './icon-512.png', './icon.png'];
 
 self.addEventListener('install', e => {
@@ -15,9 +15,10 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   e.respondWith(
     fetch(e.request).then(res => {
-      if (res.ok && new URL(e.request.url).origin === location.origin) {
+      // cache full responses only (audio range requests return 206, which the cache rejects)
+      if (res.status === 200 && new URL(e.request.url).origin === location.origin) {
         const copy = res.clone();
-        caches.open(VERSION).then(c => c.put(e.request, copy));
+        caches.open(VERSION).then(c => c.put(e.request, copy)).catch(() => {});
       }
       return res;
     }).catch(() => caches.match(e.request).then(r => r || caches.match('./index.html')))
