@@ -414,6 +414,18 @@ const KEY="edr-v2";
 let S={srs:{},log:{},voice:"",rate:0.85,topic:"전체",xp:0};
 try{const raw=localStorage.getItem(KEY);if(raw)S=Object.assign(S,JSON.parse(raw))}catch(e){}
 function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+/* PC 앱을 '내 컴퓨터 파일' 방식에서 온라인 주소 방식으로 옮길 때, 예전 학습 기록을 한 번 넘겨받는다.
+   (#import=… 로 들어온 기록을 지금 기록과 합친다: 단어는 더 많이 외운 쪽, 날짜별 문제 수와 경험치는 큰 쪽) */
+(function importProgress(){const m=location.hash.match(/^#import=(.+)$/);if(!m)return;
+  history.replaceState(null,"",location.pathname+location.search+"#home");
+  let d;try{d=JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(m[1])))))}catch(e){return}
+  if(!d||typeof d!=="object")return;
+  for(const [w,c] of Object.entries(d.srs||{})){const mine=S.srs[w];if(!mine||(c.box||0)>(mine.box||0))S.srs[w]=c}
+  for(const [day,l] of Object.entries(d.log||{})){const mine=S.log[day]||{};const out={...mine};
+    for(const [k,v] of Object.entries(l))out[k]=typeof v==="number"?Math.max(v,mine[k]||0):(v||mine[k]);S.log[day]=out}
+  S.xp=Math.max(S.xp||0,d.xp||0);
+  for(const k of ["voice","rate","topic","rec","asr"])if(d[k]!==undefined&&S[k]===undefined)S[k]=d[k];
+  save();window._imported=true})();
 const dkey=(d=new Date())=>d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
 function dayLog(k=dkey()){S.log[k]=S.log[k]||{words:0,dictation:0,writing:0,shadowing:0,patterns:0};return S.log[k]}
 const dayTotal=k=>{const l=S.log[k];return l?["words","dictation","writing","shadowing","patterns"].reduce((a,t)=>a+(l[t]||0),0):0};
@@ -954,4 +966,5 @@ function confetti(){if(matchMedia("(prefers-reduced-motion: reduce)").matches)re
     if(++f<150)requestAnimationFrame(tick);else{c.hidden=true}})()}
 
 render();
+if(window._imported)setTimeout(()=>toast("예전 PC 학습 기록을 가져왔어요"),400);
 </script>
