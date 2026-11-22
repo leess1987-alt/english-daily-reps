@@ -450,15 +450,34 @@ function ttsSpeak(text,rateMul=1,onend){if(!synth){toast("이 기기는 음성 �
 /* 원어민 스타일 녹음 파일(audio/*.mp3)을 먼저 재생하고, 없으면 기기 음성(TTS)으로 대신 읽기 */
 const slug=t=>t.toLowerCase().replace(/[’']/g,"").replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
 const audioOK=!/claude\.ai|claudeusercontent|claude\.site/.test(location.hostname);
-let player=null;
-function hush(){if(synth)synth.cancel();if(player){player.onended=null;player.onerror=null;player.pause();player=null}}
-function speak(text,rateMul=1,onend){hush();
-  if(!audioOK||S.rec===false){ttsSpeak(text,rateMul,onend);return}
-  const a=new Audio("audio/"+slug(text)+".mp3");player=a;
-  const r=Math.min(2,Math.max(.5,S.rate/0.85*rateMul));a.defaultPlaybackRate=r;a.playbackRate=r;a.preservesPitch=true;
-  let fell=false;const fall=()=>{if(fell||player!==a)return;fell=true;player=null;ttsSpeak(text,rateMul,onend)};
-  a.onerror=fall;a.onended=()=>{if(player===a)player=null;if(onend)onend()};
-  a.play().catch(e=>{if(!(e&&e.name==="NotAllowedError"))fall()})}
+/* 소리 재생은 오디오 플레이어 하나를 계속 재사용한다. 아이폰은 사용자가 한 번 누른 플레이어만
+   나중에 자동 재생을 허락하고, 새로 만든 플레이어는 첫 소리가 늦게 나오거나 앞부분이 잘린다. */
+const AUD=new Audio();AUD.preload="auto";AUD.setAttribute("playsinline","");
+let playTok=0,playTimer=null;
+function hush(){if(synth)synth.cancel();playTok++;clearTimeout(playTimer);AUD.onended=null;AUD.onerror=null;try{AUD.pause()}catch(e){}}
+/* src를 재생: 불러올 준비가 끝난 뒤 시작해서 앞부분이 먹히지 않게 */
+function playSrc(src,rate,onend,onfail){hush();const my=playTok;
+  AUD.src=src;AUD.defaultPlaybackRate=rate;AUD.playbackRate=rate;AUD.preservesPitch=true;AUD.webkitPreservesPitch=true;
+  AUD.onerror=()=>{if(my===playTok&&onfail)onfail()};
+  AUD.onended=()=>{if(my===playTok&&onend)onend()};
+  const go=()=>{if(my!==playTok)return;AUD.playbackRate=rate;try{AUD.currentTime=0}catch(e){}
+    AUD.play().catch(e=>{if(my===playTok&&!(e&&e.name==="NotAllowedError")&&onfail)onfail()})};
+  /* 마이크를 막 썼다면 아이폰 소리 장치가 재생 모드로 돌아올 시간을 아주 조금 준다 */
+  const lead=Date.now()-lastMicUse<1500?250:0;
+  if(AUD.readyState>=3){playTimer=setTimeout(go,lead)}else{let started=false;const once=()=>{if(started)return;started=true;playTimer=setTimeout(go,lead)};
+    AUD.addEventListener("canplaythrough",once,{once:true});setTimeout(once,700);AUD.load()}}
+let lastMicUse=0;
+function speak(text,rateMul=1,onend){
+  if(!audioOK||S.rec===false){hush();ttsSpeak(text,rateMul,onend);return}
+  const r=Math.min(2,Math.max(.5,S.rate/0.85*rateMul));
+  playSrc("audio/"+slug(text)+".mp3",r,onend,()=>{hush();ttsSpeak(text,rateMul,onend)})}
+/* 첫 터치 때 플레이어를 '열어' 두면 이후 자동 재생이 막히지 않는다 */
+const SILENT="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+const unlockAudio=()=>{document.removeEventListener("touchend",unlockAudio,true);document.removeEventListener("click",unlockAudio,true);
+  if(AUD.src)return;/* 이미 재생에 쓴 적이 있으면 열 필요 없음 */
+  AUD.muted=true;AUD.src=SILENT;const done=()=>{AUD.muted=false;if(AUD.src===SILENT){try{AUD.pause()}catch(e){}}};
+  AUD.play().then(done,done)};
+document.addEventListener("touchend",unlockAudio,true);document.addEventListener("click",unlockAudio,true);
 
 /* ================= HELPERS ================= */
 const $=s=>document.querySelector(s);
@@ -561,7 +580,7 @@ async function toggleRec(after){
     rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
     rec.onstop=()=>{stream.getTracks().forEach(t=>t.stop());if(myUrl)URL.revokeObjectURL(myUrl);myUrl=URL.createObjectURL(new Blob(chunks,{type:rec.mimeType||"audio/mp4"}));after()};
     rec.start();after()}catch(e){toast("마이크 권한을 허용해 주세요")}}
-function playMine(){if(myUrl)new Audio(myUrl).play().catch(()=>{})}
+function playMine(){if(myUrl)playSrc(myUrl,1,null,null)}
 
 /* ================= AI 발음 인식 (Moonshine, 기기 안에서 실행) =================
    아이폰 홈 화면 앱에서는 Safari 음성 인식이 두 번째부터 소리를 못 받는 버그가 있어서,
@@ -589,24 +608,40 @@ function wavBlob(pcm,rate){const b=new ArrayBuffer(44+pcm.length*2),v=new DataVi
   v.setUint32(24,rate,true);v.setUint32(28,rate*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);w(36,"data");v.setUint32(40,pcm.length*2,true);
   for(let i=0;i<pcm.length;i++){const s=Math.max(-1,Math.min(1,pcm[i]));v.setInt16(44+i*2,s<0?s*0x8000:s*0x7fff,true)}return new Blob([b],{type:"audio/wav"})}
 /* 녹음: 말이 시작되면 감지하고, 0.85초 조용하면 자동 종료 */
+/* 마이크는 앱을 쓰는 동안 한 번만 열어 두고 계속 재사용한다.
+   - 아이폰 홈 화면 앱은 마이크를 열 때마다 권한을 다시 묻는다
+   - 마이크를 닫으면 아이폰 소리 장치가 '녹음→재생'으로 바뀌면서 다음 원어민 음성 앞부분이 잘린다
+   앱이 백그라운드로 가거나 2분 동안 말하기를 안 하면 마이크를 닫는다(주황 점 꺼짐). */
+let micStream=null,micCtx=null,micWorklet=false,micIdle=null;
+const micLive=()=>micStream&&micStream.getAudioTracks().some(t=>t.readyState==="live");
+function micContext(){if(!micCtx||micCtx.state==="closed"){const AC=window.AudioContext||window.webkitAudioContext;micCtx=new AC();micWorklet=false}
+  micCtx.resume().catch(()=>{});return micCtx}
+async function getMic(){clearTimeout(micIdle);if(micLive())return micStream;
+  micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:true,autoGainControl:true}});return micStream}
+function releaseMic(){clearTimeout(micIdle);if(curRec)curRec.cancel();
+  if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null}
+  if(micCtx){micCtx.close().catch(()=>{});micCtx=null;micWorklet=false}}
+const releaseMicSoon=()=>{clearTimeout(micIdle);micIdle=setTimeout(releaseMic,120000)};
+document.addEventListener("visibilitychange",()=>{if(document.hidden)releaseMic()});
+window.addEventListener("pagehide",releaseMic);
 async function recordUtterance(onStart,onLevel){
-  const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
-  const AC=window.AudioContext||window.webkitAudioContext;const ctx=new AC();try{await ctx.resume()}catch(e){}
+  const ctx=micContext();/* 버튼을 누른 순간 바로 깨워야 아이폰에서 소리가 들어온다 */
+  const stream=await getMic();try{await ctx.resume()}catch(e){}
   const src=ctx.createMediaStreamSource(stream),sink=ctx.createGain();sink.gain.value=0;const rate=ctx.sampleRate;
   /* 소리 받기는 오디오 전용 스레드(AudioWorklet)에서: AI가 계산하느라 바빠도 녹음이 끊기지 않는다 */
   let node=null,useWorklet=false;
   if(ctx.audioWorklet&&window.AudioWorkletNode){try{
-    const code=`class C extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(2048);this.n=0}
+    if(!micWorklet){const code=`class C extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(2048);this.n=0}
       process(i){const c=i[0]&&i[0][0];if(c){for(let k=0;k<c.length;k++){this.b[this.n++]=c[k];if(this.n===2048){this.port.postMessage(this.b.slice(0));this.n=0}}}return true}}
       registerProcessor('edr-cap',C)`;
-    const url=URL.createObjectURL(new Blob([code],{type:"application/javascript"}));await ctx.audioWorklet.addModule(url);URL.revokeObjectURL(url);
+      const url=URL.createObjectURL(new Blob([code],{type:"application/javascript"}));await ctx.audioWorklet.addModule(url);URL.revokeObjectURL(url);micWorklet=true}
     node=new AudioWorkletNode(ctx,"edr-cap");useWorklet=true}catch(e){node=null}}
   if(!node)node=ctx.createScriptProcessor(2048,1,1);
   const bufs=[];let speaking=false,lastVoice=0,noise=0,nN=0,startBuf=0,lastVoiceBuf=0;
   return await new Promise(resolve=>{let ended=false;
     const end=why=>{if(ended)return;ended=true;if(useWorklet)node.port.onmessage=null;else node.onaudioprocess=null;
       try{src.disconnect();node.disconnect();sink.disconnect()}catch(e){}
-      stream.getTracks().forEach(t=>t.stop());ctx.close().catch(()=>{});if(curRec&&curRec.end===end)curRec=null;
+      lastMicUse=Date.now();releaseMicSoon();if(curRec&&curRec.end===end)curRec=null;/* 마이크는 닫지 않고 다음 문장에 재사용 */
       resolve({why,spoke:speaking,rate,pcm:concatF32(bufs.slice(startBuf)),speechEnd:Math.max(0,lastVoiceBuf-startBuf)*2048})};
     curRec={end,finish:()=>end("tap"),cancel:()=>end("cancel"),
       peek:()=>({spoke:speaking,rate,pcm:concatF32(bufs.slice(startBuf))})};
