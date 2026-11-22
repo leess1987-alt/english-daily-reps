@@ -40,12 +40,17 @@ texts.setdefault("Nice to meet you.", "af_heart")
 
 kokoro = Kokoro(str(model_dir / "kokoro-v1.0.onnx"), str(model_dir / "voices-v1.0.bin"))
 
-def trim(x, sr, thr=0.008, pad=0.06):
+def trim(x, sr, thr=0.002, pad_head=0.08, pad_tail=0.15, lead=0.2):
+    """Trim long silence gently and add a short silent lead-in.
+
+    A tight trim cut soft first sounds (h, f, s), and devices that take a moment to
+    start playing swallowed what was left. Keep 80 ms before the first faint sound,
+    then prepend 200 ms of silence so any start-up delay eats silence, not speech.
+    """
     idx = np.where(np.abs(x) > thr)[0]
-    if not len(idx):
-        return x
-    p = int(sr * pad)
-    return x[max(0, idx[0] - p): idx[-1] + p]
+    if len(idx):
+        x = x[max(0, idx[0] - int(sr * pad_head)): idx[-1] + int(sr * pad_tail)]
+    return np.concatenate([np.zeros(int(sr * lead), dtype=x.dtype), x])
 
 made = 0
 for text, voice in texts.items():
