@@ -3,7 +3,8 @@
 매일 15분 초급 영어 연습 앱: 단어 카드(간격 반복), 받아쓰기, 문장 만들기, 따라 말하기(발음 채점·녹음 비교), 기초 문법.
 
 - **아이폰:** GitHub Pages 주소를 Safari로 열고 공유 → 홈 화면에 추가
-- **Windows PC:** `install.bat` 실행 → 바탕화면 / 시작 메뉴에 바로가기 생성
+- **Windows PC:** `install.bat` 실행 → `F:\Programs\EnglishDailyReps`에 설치, 바탕화면 / 시작 메뉴에 바로가기 생성
+  (소스를 고친 뒤 다시 실행하면 새 버전으로 덮어씀). 제거는 `F:\Programs\EnglishDailyReps\uninstall.bat`
 
 ## 음성 파일
 `audio/*.mp3`는 [Kokoro](https://github.com/hexgrad/kokoro) (Apache-2.0) AI 음성으로 만든 파일입니다.
