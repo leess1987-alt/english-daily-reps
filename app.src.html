@@ -444,13 +444,21 @@ function playSrc(src,rate,onend,onfail){hush();const my=playTok;
   AUD.src=src;AUD.defaultPlaybackRate=rate;AUD.playbackRate=rate;AUD.preservesPitch=true;AUD.webkitPreservesPitch=true;
   AUD.onerror=()=>{if(my===playTok&&onfail)onfail()};
   AUD.onended=()=>{if(my===playTok&&onend)onend()};
+  /* 소리가 한동안 쉬었으면(PC 스피커·블루투스 절전) 또는 마이크를 막 썼으면(아이폰 녹음→재생 전환),
+     장치가 깨어나는 동안 앞소리가 잘린다. 그래서 소리를 끈 채 0.3초 먼저 재생해 장치를 깨운 뒤 처음부터 다시 들려준다. */
+  const cold=Date.now()-lastAudioOut>3000||Date.now()-lastMicUse<1500;
+  const fail=e=>{if(my===playTok&&!(e&&e.name==="NotAllowedError")&&onfail)onfail()};
   const go=()=>{if(my!==playTok)return;AUD.playbackRate=rate;try{AUD.currentTime=0}catch(e){}
-    AUD.play().catch(e=>{if(my===playTok&&!(e&&e.name==="NotAllowedError")&&onfail)onfail()})};
-  /* 마이크를 막 썼다면 아이폰 소리 장치가 재생 모드로 돌아올 시간을 아주 조금 준다 */
-  const lead=Date.now()-lastMicUse<1500?250:0;
+    if(!cold){AUD.muted=false;AUD.play().catch(fail);return}
+    AUD.muted=true;AUD.play().then(()=>{playTimer=setTimeout(()=>{if(my!==playTok)return;
+      try{AUD.currentTime=0}catch(e){}AUD.muted=false;lastAudioOut=Date.now()},300)},fail)};
+  const lead=0;
   if(AUD.readyState>=3){playTimer=setTimeout(go,lead)}else{let started=false;const once=()=>{if(started)return;started=true;playTimer=setTimeout(go,lead)};
     AUD.addEventListener("canplaythrough",once,{once:true});setTimeout(once,700);AUD.load()}}
-let lastMicUse=0;
+let lastMicUse=0,lastAudioOut=0;
+/* 실제로 소리가 나고 있는 동안은 장치가 깨어 있다고 기록 */
+setInterval(()=>{if(!AUD.paused&&!AUD.muted)lastAudioOut=Date.now()},500);
+AUD.addEventListener("ended",()=>{lastAudioOut=Date.now()});
 function speak(text,rateMul=1,onend){
   if(!audioOK||S.rec===false){hush();ttsSpeak(text,rateMul,onend);return}
   const r=Math.min(2,Math.max(.5,S.rate/0.85*rateMul));
@@ -459,7 +467,7 @@ function speak(text,rateMul=1,onend){
 const SILENT="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
 const unlockAudio=()=>{document.removeEventListener("touchend",unlockAudio,true);document.removeEventListener("click",unlockAudio,true);
   if(AUD.src)return;/* 이미 재생에 쓴 적이 있으면 열 필요 없음 */
-  AUD.muted=true;AUD.src=SILENT;const done=()=>{AUD.muted=false;if(AUD.src===SILENT){try{AUD.pause()}catch(e){}}};
+  AUD.muted=true;AUD.src=SILENT;const done=()=>{if(AUD.src===SILENT){try{AUD.pause()}catch(e){}AUD.muted=false}};
   AUD.play().then(done,done)};
 document.addEventListener("touchend",unlockAudio,true);document.addEventListener("click",unlockAudio,true);
 
